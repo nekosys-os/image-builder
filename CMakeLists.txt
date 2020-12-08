@@ -3,4 +3,4 @@ project(image_builder)
 
 set(CMAKE_CXX_STANDARD 14)
 
-add_executable(image_builder main.cpp)
+add_executable(image_builder main.cpp buffer.cpp buffer.h file_content.h)
