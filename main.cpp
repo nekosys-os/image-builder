@@ -151,6 +151,8 @@ int main(int argc, char *argv[]) {
     int cluster = 3;
 
     for (const auto &entry : std::filesystem::directory_iterator(fsRootPath)) {
+        if (entry.is_directory())
+            continue;
         auto file = read_binary(entry.path().string());
 
         int total_clusters = ceil((double) file.length / (double) cluster_size);
