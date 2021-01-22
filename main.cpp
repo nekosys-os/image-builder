@@ -7,6 +7,14 @@
 #include "file_content.h"
 #include "buffer.h"
 
+#define ATTR_READONLY 0x01u
+#define ATTR_HIDDEN   0x02u
+#define ATTR_SYSTEM   0x04u
+#define ATTR_VOLUME   0x08u
+#define ATTR_SUBDIR   0x10u
+#define ATTR_ARCHIVE  0x20u
+#define ATTR_DEVICE   0x40u
+
 using namespace std;
 
 void bad_args(char **argv) {
@@ -54,6 +62,64 @@ write_dirent(buffer &buf, int offset, const std::string &name, uint8_t attribute
               << std::endl;
 }
 
+void
+write_dir(buffer &buf, int base, const std::string &path, int *cluster, int fat0_idx, int fat1_idx, int cluster_size,
+          int root_dir_end) {
+    for (const auto &entry : std::filesystem::directory_iterator(path)) {
+        if (entry.path().filename().string().length() > 11) {
+            std::cout << "SKIPPED: " << entry.path().filename().string() << " because its name exceeds 8.3"
+                      << std::endl;
+            continue;
+        }
+
+        if (entry.is_directory()) {
+            std::cout << "BEGIN SUBDIR: " << entry.path().filename().string() << std::endl;
+            write_dirent(buf, base, entry.path().filename().string(), ATTR_SUBDIR, *cluster, 0);
+            base += 32;
+
+            int subdir_offset = root_dir_end + cluster_size * (*cluster - 2);
+            std::cout << " Writing subdir to " << *cluster << " / " << subdir_offset << std::endl;
+
+            buf.write_at(fat0_idx + (2 * *cluster), 0xFFFF);
+            buf.write_at(fat1_idx + (2 * *cluster), 0xFFFF);
+            *cluster += 1;
+
+            write_dir(buf, subdir_offset, path + "/" + entry.path().filename().string(), cluster, fat0_idx, fat1_idx,
+                      cluster_size, root_dir_end);
+            std::cout << "END SUBDIR: " << entry.path().filename().string() << std::endl;
+            continue;
+        }
+
+        auto file = read_binary(entry.path().string());
+
+        int total_clusters = ceil((double) file.length / (double) cluster_size);
+        std::cout << "FILE: " << entry.path().filename().string() << " (" << total_clusters << " clusters, "
+                  << file.length << " B) at " << *cluster << std::endl;
+
+        // write FAT
+        for (int i = 0; i < total_clusters; i++) {
+            int currentClusterIdx = *cluster + i;
+            int currentClusterOffset = currentClusterIdx * 2;
+            uint16_t next_cluster = (i < total_clusters - 1) ? (currentClusterIdx + 1) : 0xFFFF;
+            std::cout << "  " << currentClusterIdx << " -> " << next_cluster << std::endl;
+
+            buf.write_at(fat0_idx + currentClusterOffset, next_cluster);
+            buf.write_at(fat1_idx + currentClusterOffset, next_cluster);
+        }
+
+        // write dirent
+        write_dirent(buf, base, entry.path().filename().string(), 0, *cluster, file.length);
+
+        // write actual file data
+        int file_offset = root_dir_end + cluster_size * (*cluster - 2);
+        buf.write_at(file_offset, file);
+
+        base += 32;
+        *cluster += total_clusters;
+        std::cout << std::endl;
+    }
+}
+
 int main(int argc, char *argv[]) {
     std::string bootSectorPath;
     std::string bootLoaderPath;
@@ -84,7 +150,7 @@ int main(int argc, char *argv[]) {
         bad_args(argv);
     }
 
-    log("** Neko image builder v0.2.0 **");
+    log("** Neko image builder v0.3.0 **");
 
     const int image_size = 16 * 1024 * 1024;
     const int first_partition_block = 128;
@@ -138,7 +204,7 @@ int main(int argc, char *argv[]) {
     int root_dir_begin = bytes_per_block * (first_partition_block + reserved_blocks + blocks_per_fat * fat_count);
     std::cout << "ROOTDIR: At " << root_dir_begin << std::endl;
 
-    write_dirent(buf, root_dir_begin, "NEKOSYS", 0x08u, 0, 0);
+    write_dirent(buf, root_dir_begin, "NEKOSYS", ATTR_VOLUME, 0, 0);
     int root_dir_end = root_dir_begin + root_dir_entries * 32;
     int next_root_dir_ent = root_dir_begin + 32;
 
@@ -150,37 +216,7 @@ int main(int argc, char *argv[]) {
 
     int cluster = 3;
 
-    for (const auto &entry : std::filesystem::directory_iterator(fsRootPath)) {
-        if (entry.is_directory())
-            continue;
-        auto file = read_binary(entry.path().string());
-
-        int total_clusters = ceil((double) file.length / (double) cluster_size);
-        std::cout << "FILE: " << entry.path().filename().string() << " (" << total_clusters << " clusters, "
-                  << file.length << " B) at " << cluster << std::endl;
-
-        // write FAT
-        for (int i = 0; i < total_clusters; i++) {
-            int currentClusterIdx = cluster + i;
-            int currentClusterOffset = currentClusterIdx * 2;
-            uint16_t next_cluster = (i < total_clusters - 1) ? (currentClusterIdx + 1) : 0xFFFF;
-            std::cout << "  " << currentClusterIdx << " -> " << next_cluster << std::endl;
-
-            buf.write_at(fat0_idx + currentClusterOffset, next_cluster);
-            buf.write_at(fat1_idx + currentClusterOffset, next_cluster);
-        }
-
-        // write dirent
-        write_dirent(buf, next_root_dir_ent, entry.path().filename().string(), 0, cluster, file.length);
-
-        // write actual file data
-        int file_offset = root_dir_end + cluster_size * (cluster - 2);
-        buf.write_at(file_offset, file);
-
-        next_root_dir_ent += 32;
-        cluster += total_clusters;
-        std::cout << std::endl;
-    }
+    write_dir(buf, next_root_dir_ent, fsRootPath, &cluster, fat0_idx, fat1_idx, cluster_size, root_dir_end);
 
     // Write output
     log("OUTPUT: Writing image file...");
