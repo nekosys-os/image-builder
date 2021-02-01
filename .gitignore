@@ -34,3 +34,10 @@
 # CMake
 cmake-build-debug/
 cmake-build-release/
+
+# CMake standalone
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+image_builder

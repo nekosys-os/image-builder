@@ -1,2 +1,4 @@
 #!/bin/bash
-cp cmake-build-debug/image_builder /usr/local/bin/nkimg
+cmake .
+make
+cp image_builder /usr/local/bin/nkimg
